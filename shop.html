@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shopping List</title>
+<meta name="theme-color" content="#1565c0">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root { --ok: #2e7d32; --mod: #f9a825; --low: #ef6c00; --out: #c62828; --accent: #1565c0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #f5f5f5; color: #222; font-size: 18px; }
+  header { background: var(--accent); color: white; padding: 12px 16px; }
+  header h1 { margin: 0; font-size: 1.3rem; }
+  #updated { font-size: .85rem; opacity: .9; }
+  main { padding: 12px; max-width: 600px; margin: 0 auto; }
+  h2 { font-size: 1rem; color: #666; margin: 18px 0 8px; }
+  /* Each item is a big tappable row, easy to hit with a thumb in a shop */
+  label.item { display: flex; align-items: center; gap: 12px; background: white; border-radius: 10px;
+               padding: 14px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.1);
+               border-left: 6px solid var(--low); cursor: pointer; }
+  label.item.o { border-left-color: var(--out); }
+  label.item.m { border-left-color: var(--mod); }
+  label.item input { width: 28px; height: 28px; flex-shrink: 0; }
+  .name { font-weight: bold; }
+  .details { color: #666; font-size: .85rem; }
+  /* Ticked items: greyed out and crossed through */
+  label.item.done { opacity: .5; }
+  label.item.done .name { text-decoration: line-through; }
+  #progress { font-weight: bold; margin: 4px 0 0; }
+  button { padding: 12px 16px; border-radius: 8px; border: 1px solid #ccc; background: white;
+           font-size: 1rem; margin-top: 16px; width: 100%; }
+  .empty { background: white; padding: 16px; border-radius: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛒 Shopping List</h1>
+  <div id="updated"></div>
+</header>
+<main>
+  <p id="progress"></p>
+  <div id="list"></div>
+  <button id="clearBtn">Untick everything</button>
+</main>
+
+<script>
+// ------------------------------------------------------------------
+// Where the list comes from:
+// The tablet packs the list into this page's address after the "#".
+// When you tap a stock alert in ntfy, this page opens with that address,
+// reads the list, and saves it on this phone so it's still here later.
+// ------------------------------------------------------------------
+const LIST_KEY = "shoppingList.latest";
+const TICKS_KEY = "shoppingList.ticked";   // names of items already bought
+
+const LABEL = { o: "OUT", l: "LOW", m: "MODERATE" };
+
+function readListFromAddress() {
+  if (location.hash.length < 2) return;
+  try {
+    const incoming = JSON.parse(decodeURIComponent(location.hash.slice(1)));
+    const saved = JSON.parse(localStorage.getItem(LIST_KEY) || "null");
+    // Only replace the saved list if this one is newer (an old notification
+    // tapped by accident shouldn't overwrite a newer list)
+    if (!saved || incoming.t >= saved.t) {
+      localStorage.setItem(LIST_KEY, JSON.stringify(incoming));
+    }
+  } catch (error) {
+    console.warn("Couldn't read the list from the address", error);
+  }
+  // Remove the list from the address bar, so a home-screen shortcut or a
+  // refresh shows the saved (latest) list instead of this exact one
+  history.replaceState(null, "", location.pathname);
+}
+
+function getTicked() {
+  return JSON.parse(localStorage.getItem(TICKS_KEY) || "[]");
+}
+
+function setTicked(names) {
+  localStorage.setItem(TICKS_KEY, JSON.stringify(names));
+}
+
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = String(text);
+  // Also escape quote marks, because names go inside data-name="..."
+  return div.innerHTML.replace(/"/g, "&quot;");
+}
+
+function render() {
+  const saved = JSON.parse(localStorage.getItem(LIST_KEY) || "null");
+  const container = document.getElementById("list");
+
+  if (!saved || saved.items.length === 0) {
+    document.getElementById("updated").textContent = "";
+    document.getElementById("progress").textContent = "";
+    container.innerHTML = saved
+      ? `<p class="empty">✅ Nothing to buy – everything is stocked.</p>`
+      : `<p class="empty">No list yet. Tap a stock alert in the ntfy app on this phone to load the list.</p>`;
+    return;
+  }
+
+  document.getElementById("updated").textContent =
+    "List from " + new Date(saved.t).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+  // Keep only ticks for items that are still on the list
+  const names = saved.items.map(item => item[0]);
+  const ticked = getTicked().filter(name => names.includes(name));
+  setTicked(ticked);
+
+  // Each item is [name, status code, count, unit, category]
+  const row = ([name, code, count, unit, category]) => `
+    <label class="item ${code} ${ticked.includes(name) ? "done" : ""}">
+      <input type="checkbox" data-name="${escapeHtml(name)}" ${ticked.includes(name) ? "checked" : ""}>
+      <span>
+        <span class="name">${escapeHtml(name)}</span><br>
+        <span class="details">${LABEL[code]} · ${escapeHtml(count)} ${escapeHtml(unit)} left · ${escapeHtml(category)}</span>
+      </span>
+    </label>`;
+
+  // Sort by category so items from the same area are together
+  const byCategory = (a, b) => a[4].localeCompare(b[4]) || a[0].localeCompare(b[0]);
+  const needToBuy = saved.items.filter(i => i[1] !== "m").sort(byCategory);
+  const moderate = saved.items.filter(i => i[1] === "m").sort(byCategory);
+
+  let html = "";
+  if (needToBuy.length) html += "<h2>Need to buy</h2>" + needToBuy.map(row).join("");
+  if (moderate.length) html += "<h2>Moderate – still have some</h2>" + moderate.map(row).join("");
+  container.innerHTML = html;
+
+  document.getElementById("progress").textContent = `Got ${ticked.length} of ${saved.items.length}`;
+}
+
+// Tapping a tick box saves it straight away, so closing the page is safe
+document.getElementById("list").addEventListener("change", event => {
+  const name = event.target.dataset.name;
+  if (!name) return;
+  const ticked = getTicked().filter(n => n !== name);
+  if (event.target.checked) ticked.push(name);
+  setTicked(ticked);
+  render();
+});
+
+document.getElementById("clearBtn").addEventListener("click", () => {
+  if (confirm("Untick every item?")) { setTicked([]); render(); }
+});
+
+// If the page is already open and you tap another alert, load the new list
+window.addEventListener("hashchange", () => { readListFromAddress(); render(); });
+
+readListFromAddress();
+render();
+</script>
+</body>
+</html>
