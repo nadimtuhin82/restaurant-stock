@@ -347,39 +347,85 @@ function renderReorder() {
 // phone subscribed to that topic in the ntfy app gets a notification.
 // ------------------------------------------------------------------
 // Builds the web address of the phone's shopping-list page (shop.html),
-// with the current list packed into the part after "#". Tapping the
-// notification opens this address, so the phone gets the list without
-// needing its own copy of the stock data.
-function shoppingLink() {
-  // Short codes keep the address small: o = out, l = low, m = moderate
+// with the list packed into the part after "#". Tapping the alert's button
+// opens this address, so the phone gets the list without needing its own
+// copy of the stock data.
+//
+// ntfy's free plan refuses alerts bigger than 4,096 bytes, so the list is
+// packed tightly. Example: "v2*lx8k2a*Walk-in!Sauces*o0Chicken~l1Ketchup*0"
+//   v2        = format version (so shop.html knows how to read it)
+//   lx8k2a    = time the list was made
+//   Walk-in!… = the categories used, each written once, split by "!"
+//   o0Chicken = status (o/l/m) + category number + item name, split by "~"
+//   0         = how many items didn't fit (shown as a note on the phone)
+//   topic     = the ntfy topic, so the phone page can fetch new lists itself
+function shoppingLink(buyList, moderateList, leftOut = 0) {
+  const clean = text => String(text).replace(/[*!~]/g, "-");   // these are our separators
   const code = { out: "o", low: "l", moderate: "m" };
-  // Each item becomes [name, status code, category]
-  const list = [...needToBuy(), ...moderateItems()].map(i =>
-    [i.name, code[statusOf(i)], i.category]);
-  const packed = encodeURIComponent(JSON.stringify({ t: Date.now(), items: list }));
-  return new URL("shop.html", location.href).href + "#" + packed;
+  const all = [...buyList, ...moderateList];
+  const categories = [...new Set(all.map(i => i.category))];
+  const packedItems = all.map(i =>
+    code[statusOf(i)] + categories.indexOf(i.category).toString(36) + clean(i.name));
+  const text = ["v2", Date.now().toString(36), categories.map(clean).join("!"),
+                packedItems.join("~"), leftOut, clean(getTopic())].join("*");
+  return new URL("shop.html", location.href).href + "#" + encodeURIComponent(text);
+}
+
+const NTFY_LIMIT_BYTES = 4000;   // a little under ntfy's 4,096 to be safe
+
+// Builds the alert. If it's too big for ntfy, it tries smaller versions in
+// order until one fits: drop the full list from the text, drop the tap
+// link (the button still opens the list), leave out Moderate items, and
+// finally leave out the last Need-to-buy items.
+function buildAlert(title, headline, priority) {
+  const buy = needToBuy(), moderate = moderateItems();
+  const summary = `${buy.length} to buy, ${moderate.length} moderate.`;
+  const hint = "\n\nTap \"Open shopping list\" to tick items off.";
+
+  const make = (message, withClick, buyList, moderateList) => {
+    const leftOut = buy.length + moderate.length - buyList.length - moderateList.length;
+    const link = shoppingLink(buyList, moderateList, leftOut);
+    return JSON.stringify({
+      topic: getTopic(),
+      title,
+      message: message + hint,
+      priority,
+      tags: ["shopping_cart"],
+      // "click" opens the list when the notification itself is tapped
+      ...(withClick ? { click: link } : {}),
+      // "actions" adds a button to the notification and to the message
+      // inside the ntfy app. "view" means the button opens a web page.
+      actions: [{ action: "view", label: "🛒 Open shopping list", url: link }],
+    });
+  };
+  const fits = body => new Blob([body]).size <= NTFY_LIMIT_BYTES;   // Blob measures real bytes
+
+  const attempts = [
+    () => make(`${headline}\n\n${reorderText()}`, true, buy, moderate),
+    () => make(`${headline}\n${summary}`, true, buy, moderate),
+    () => make(`${headline}\n${summary}`, false, buy, moderate),
+    () => make(`${headline}\n${summary}`, false, buy, []),
+  ];
+  for (const attempt of attempts) {
+    const body = attempt();
+    if (fits(body)) return body;
+  }
+  // Still too big: keep removing items from the end until it fits
+  for (let keep = buy.length - 1; keep >= 0; keep--) {
+    const body = make(`${headline}\n${summary}`, false, buy.slice(0, keep), []);
+    if (fits(body)) return body;
+  }
+  return make(headline, false, [], []);
 }
 
 // priority: ntfy's scale is 1 (silent) to 5 (urgent); 3 is a normal notification
-async function sendToPhone(title, message, priority = 3) {
+async function sendToPhone(title, headline, priority = 3) {
   try {
-    // We send everything as one JSON package (a standard text format for data)
-    // to ntfy's main address. "click" is the page that opens when the
-    // notification is tapped: the shopping list.
-    const link = shoppingLink();
+    // We send everything as one JSON package (a standard text format for
+    // data) to ntfy's main address.
     const response = await fetch("https://ntfy.sh/", {
       method: "POST",
-      body: JSON.stringify({
-        topic: getTopic(),
-        title,
-        message: message + "\n\nTap \"Open shopping list\" to tick items off.",
-        priority,
-        tags: ["shopping_cart"],
-        click: link,
-        // "actions" adds a button to the notification and to the message
-        // inside the ntfy app. "view" means the button opens a web page.
-        actions: [{ action: "view", label: "🛒 Open shopping list", url: link }],
-      }),
+      body: buildAlert(title, headline, priority),
     });
     if (!response.ok) throw new Error("ntfy answered " + response.status);
     showToast("📲 Sent to owner's phone");
@@ -399,7 +445,7 @@ function alertIfWorse(item, oldStatus) {
   if (STATUS_RANK[newStatus] > STATUS_RANK[oldStatus]) {
     sendToPhone(
       `${STATUS_LABEL[newStatus]}: ${item.name}`,
-      `${item.name} is ${STATUS_LABEL[newStatus]}.\n\nFull list:\n${reorderText()}`,
+      `${item.name} is ${STATUS_LABEL[newStatus]}.`,
       newStatus === "moderate" ? 2 : 3
     );
   }
@@ -498,7 +544,7 @@ function showTab(name) {
 document.getElementById("search").addEventListener("input", renderStock);
 
 document.getElementById("sendListBtn").addEventListener("click", () =>
-  sendToPhone("Reorder list", reorderText()));
+  sendToPhone("Reorder list", "Here's the current list."));
 
 document.getElementById("copyListBtn").addEventListener("click", async () => {
   try {

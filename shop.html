@@ -49,27 +49,48 @@
 <script>
 // ------------------------------------------------------------------
 // Where the list comes from:
-// The tablet packs the list into this page's address after the "#".
-// When you tap a stock alert in ntfy, this page opens with that address,
-// reads the list, and saves it on this phone so it's still here later.
+// 1. Every alert from the tablet has the list packed into a link. Tapping
+//    "Open shopping list" opens this page with that link, and the page
+//    learns the ntfy topic from it.
+// 2. After that, this page asks ntfy for the newest list by itself every
+//    time it's opened, and listens live while it's open. So you can open it
+//    from your home screen and it's up to date.
+// The list is saved on this phone, so it's still here without internet.
 // ------------------------------------------------------------------
 const LIST_KEY = "shoppingList.latest";
 const TICKS_KEY = "shoppingList.ticked";   // names of items already bought
+const TOPIC_KEY = "shoppingList.topic";    // learned from the first alert you tap
 
 const LABEL = { o: "OUT", l: "LOW", m: "MODERATE" };
+
+// Turns the packed text from the address back into a list.
+// Every item becomes [name, status code, category].
+function unpackList(text) {
+  if (text.startsWith("v2*")) {
+    // Packed format – see shoppingLink() in index.html for how it's built
+    const [, time, categoryText, itemText, leftOut, topic] = text.split("*");
+    const categories = categoryText ? categoryText.split("!") : [];
+    const items = (itemText ? itemText.split("~") : [])
+      .filter(part => part.length > 2)
+      .map(part => [part.slice(2), part[0], categories[parseInt(part[1], 36)] || "Other"]);
+    return { t: parseInt(time, 36), items, leftOut: parseInt(leftOut || "0", 10), topic };
+  }
+  // Older alerts sent the list as JSON
+  return JSON.parse(text);
+}
 
 function readListFromAddress() {
   if (location.hash.length < 2) return;
   try {
-    const incoming = JSON.parse(decodeURIComponent(location.hash.slice(1)));
-    const saved = JSON.parse(localStorage.getItem(LIST_KEY) || "null");
-    // Only replace the saved list if this one is newer (an old notification
-    // tapped by accident shouldn't overwrite a newer list)
-    if (!saved || incoming.t >= saved.t) {
-      localStorage.setItem(LIST_KEY, JSON.stringify(incoming));
-    }
+    // Always show exactly the list from the alert you tapped. (We used to
+    // compare times, but a device with its clock set wrong could make a
+    // new list look "old" and get ignored.)
+    const incoming = unpackList(decodeURIComponent(location.hash.slice(1)));
+    localStorage.setItem(LIST_KEY, JSON.stringify(incoming));
+    if (incoming.topic) localStorage.setItem(TOPIC_KEY, incoming.topic);
   } catch (error) {
     console.warn("Couldn't read the list from the address", error);
+    alert("Sorry, this alert's list couldn't be read. Ask the tablet to send the list again.");
   }
   // Remove the list from the address bar, so a home-screen shortcut or a
   // refresh shows the saved (latest) list instead of this exact one
@@ -104,8 +125,12 @@ function render() {
     return;
   }
 
+  // Prefer ntfy's own clock (serverTime, in seconds) over the tablet's,
+  // in case the tablet's clock is set wrong
+  const when = saved.serverTime ? saved.serverTime * 1000 : saved.t;
   document.getElementById("updated").textContent =
-    "List from " + new Date(saved.t).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    "List from " + new Date(when).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) +
+    " · " + connectionStatus;
 
   // Keep only ticks for items that are still on the list
   const names = saved.items.map(item => item[0]);
@@ -136,6 +161,10 @@ function render() {
   let html = "";
   if (needToBuy.length) html += "<h2>Need to buy</h2>" + needToBuy.map(row).join("");
   if (moderate.length) html += "<h2>Moderate – still have some</h2>" + moderate.map(row).join("");
+  // If the list was too long to fit in one alert, say so
+  if (saved.leftOut > 0) {
+    html += `<p class="empty">⚠️ ${saved.leftOut} more item(s) didn't fit in this alert – check the tablet's Reorder list.</p>`;
+  }
   container.innerHTML = html;
 
   document.getElementById("progress").textContent = `Got ${ticked.length} of ${saved.items.length}`;
@@ -156,10 +185,76 @@ document.getElementById("clearBtn").addEventListener("click", () => {
 });
 
 // If the page is already open and you tap another alert, load the new list
-window.addEventListener("hashchange", () => { readListFromAddress(); render(); });
+window.addEventListener("hashchange", () => { readListFromAddress(); render(); startLive(); });
+
+// ------------------------------------------------------------------
+// Getting new lists straight from ntfy
+// ------------------------------------------------------------------
+let connectionStatus = "not connected yet";
+let liveConnection = null;
+
+// An ntfy message holds the list link in its button (or its tap link).
+// If it has a list newer than ours, save and show it. Returns true if the
+// message had a list in it.
+function useMessage(message) {
+  const links = [...(message.actions || []).map(a => a.url), message.click];
+  const link = links.find(url => url && url.includes("#"));
+  if (!link) return false;
+  try {
+    const list = unpackList(decodeURIComponent(link.split("#")[1]));
+    list.serverTime = message.time;   // when ntfy received it (reliable clock)
+    const saved = JSON.parse(localStorage.getItem(LIST_KEY) || "null");
+    // Skip it if we already have this list or a newer one from ntfy
+    if (saved && saved.serverTime && saved.serverTime >= message.time) return true;
+    localStorage.setItem(LIST_KEY, JSON.stringify(list));
+    render();
+    return true;
+  } catch (error) {
+    return false;   // not a list we can read (e.g. a very old alert) – ignore it
+  }
+}
+
+// Ask ntfy for the recent messages on our topic (it keeps them ~12 hours)
+// and use the newest one that has a list.
+async function fetchLatest() {
+  const topic = localStorage.getItem(TOPIC_KEY);
+  if (!topic) return;
+  try {
+    const response = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}/json?poll=1&since=all`);
+    const lines = (await response.text()).trim().split("\n").filter(Boolean);
+    const messages = lines.map(line => JSON.parse(line)).filter(m => m.event === "message");
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (useMessage(messages[i])) break;   // newest first; stop at the first list
+    }
+    connectionStatus = "🟢 up to date";
+  } catch (error) {
+    connectionStatus = "⚪ offline – showing saved list";
+  }
+  render();
+}
+
+// While the page is open, keep a live connection to ntfy (EventSource is a
+// built-in browser tool for this). New lists appear within seconds.
+function startLive() {
+  const topic = localStorage.getItem(TOPIC_KEY);
+  if (!topic || liveConnection) return;
+  liveConnection = new EventSource(`https://ntfy.sh/${encodeURIComponent(topic)}/sse`);
+  liveConnection.onmessage = event => {
+    const message = JSON.parse(event.data);
+    if (message.event === "message") useMessage(message);
+  };
+  liveConnection.onopen = () => { connectionStatus = "🟢 live"; render(); };
+  liveConnection.onerror = () => { connectionStatus = "⚪ reconnecting…"; render(); };
+}
+
+// Phones pause pages in the background, so check again when you come back
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") fetchLatest();
+});
 
 readListFromAddress();
 render();
+fetchLatest().then(startLive);
 </script>
 </body>
 </html>
