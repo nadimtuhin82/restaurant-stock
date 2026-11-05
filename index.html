@@ -380,7 +380,7 @@ const NTFY_LIMIT_BYTES = 4000;   // a little under ntfy's 4,096 to be safe
 // order until one fits: drop the full list from the text, drop the tap
 // link (the button still opens the list), leave out Moderate items, and
 // finally leave out the last Need-to-buy items.
-function buildAlert(title, headline, priority) {
+function buildAlert(title, headline, priority, topic = getTopic()) {
   const buy = needToBuy(), moderate = moderateItems();
   const summary = `${buy.length} to buy, ${moderate.length} moderate.`;
   const hint = "\n\nTap \"Open shopping list\" to tick items off.";
@@ -389,7 +389,7 @@ function buildAlert(title, headline, priority) {
     const leftOut = buy.length + moderate.length - buyList.length - moderateList.length;
     const link = shoppingLink(buyList, moderateList, leftOut);
     return JSON.stringify({
-      topic: getTopic(),
+      topic,
       title,
       message: message + hint,
       priority,
@@ -432,6 +432,9 @@ async function sendToPhone(title, headline, priority = 3) {
     });
     if (!response.ok) throw new Error("ntfy answered " + response.status);
     showToast("📲 Sent to owner's phone");
+    // This alert already carries the newest list, so a waiting silent
+    // update isn't needed any more
+    clearTimeout(quietUpdateTimer);
   } catch (error) {
     // Usually means the tablet has no internet right now
     showToast("⚠️ Couldn't send alert (no internet?) – the list is still saved here.");
@@ -452,6 +455,27 @@ function alertIfWorse(item, oldStatus) {
       newStatus === "moderate" ? 2 : 3
     );
   }
+}
+
+// Silent list updates: when something gets BETTER (e.g. Restocked), the
+// phone's shopping list still needs to know, but you don't want a buzz.
+// So we send the list to a second channel, "<topic>-list". Your ntfy app
+// isn't subscribed to it (no notification), but the Shopping List page
+// listens to it. We wait 5 seconds first, so restocking several items in
+// a row sends just one update.
+let quietUpdateTimer = null;
+function scheduleQuietUpdate() {
+  clearTimeout(quietUpdateTimer);
+  quietUpdateTimer = setTimeout(async () => {
+    try {
+      await fetch("https://ntfy.sh/", {
+        method: "POST",
+        body: buildAlert("List update", "List updated.", 1, getTopic() + "-list"),
+      });
+    } catch (error) {
+      console.warn("Silent list update not sent (no internet?)", error);
+    }
+  }, 5000);
 }
 
 // ------------------------------------------------------------------
@@ -491,6 +515,9 @@ document.getElementById("stockList").addEventListener("click", event => {
   saveItems();
   render();
   alertIfWorse(item, oldStatus);
+  // Got better, renamed, or deleted? Quietly update the phone's list.
+  const gotBetter = STATUS_RANK[statusOf(item)] < STATUS_RANK[oldStatus];
+  if (gotBetter || ["edit", "delete"].includes(button.dataset.action)) scheduleQuietUpdate();
 });
 
 function editItem(item) {

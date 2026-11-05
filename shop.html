@@ -234,15 +234,25 @@ function useMessage(message) {
   }
 }
 
-// Ask ntfy for the recent messages on our topic (it keeps them ~12 hours)
+// We listen to two ntfy channels: the alerts topic, and "<topic>-list",
+// where the tablet sends silent updates (e.g. after Restocked). ntfy lets
+// you ask for several topics at once by joining them with a comma.
+function topicsPath() {
+  const topic = localStorage.getItem(TOPIC_KEY);
+  return topic ? `${encodeURIComponent(topic)},${encodeURIComponent(topic + "-list")}` : null;
+}
+
+// Ask ntfy for the recent messages on our topics (it keeps them ~12 hours)
 // and use the newest one that has a list.
 async function fetchLatest() {
-  const topic = localStorage.getItem(TOPIC_KEY);
-  if (!topic) return;
+  const path = topicsPath();
+  if (!path) return;
   try {
-    const response = await fetch(`https://ntfy.sh/${encodeURIComponent(topic)}/json?poll=1&since=all`);
+    const response = await fetch(`https://ntfy.sh/${path}/json?poll=1&since=all`);
     const lines = (await response.text()).trim().split("\n").filter(Boolean);
-    const messages = lines.map(line => JSON.parse(line)).filter(m => m.event === "message");
+    const messages = lines.map(line => JSON.parse(line))
+      .filter(m => m.event === "message")
+      .sort((a, b) => a.time - b.time);   // oldest → newest, across both topics
     for (let i = messages.length - 1; i >= 0; i--) {
       if (useMessage(messages[i])) break;   // newest first; stop at the first list
     }
@@ -256,9 +266,9 @@ async function fetchLatest() {
 // While the page is open, keep a live connection to ntfy (EventSource is a
 // built-in browser tool for this). New lists appear within seconds.
 function startLive() {
-  const topic = localStorage.getItem(TOPIC_KEY);
-  if (!topic || liveConnection) return;
-  liveConnection = new EventSource(`https://ntfy.sh/${encodeURIComponent(topic)}/sse`);
+  const path = topicsPath();
+  if (!path || liveConnection) return;
+  liveConnection = new EventSource(`https://ntfy.sh/${path}/sse`);
   liveConnection.onmessage = event => {
     const message = JSON.parse(event.data);
     if (message.event === "message") useMessage(message);
