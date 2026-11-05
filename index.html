@@ -5,6 +5,12 @@
 <!-- Makes the page fit phone and tablet screens instead of showing a tiny desktop page -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Restaurant Stock</title>
+<!-- These let the tablet install the page as a real app with its own icon -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1565c0">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <style>
   :root {
     --ok: #2e7d32; --mod: #f9a825; --low: #ef6c00; --out: #c62828;
@@ -638,6 +644,12 @@ setInterval(() => {
     showToast("Manager mode locked automatically");
   }
 }, 30 * 1000);
+
+// Register the service worker (sw.js) so Chrome offers "Install app".
+// Only works on https:// or localhost, so we check it's supported first.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(error => console.warn("Service worker not registered", error));
+}
 
 render();
 </script>
