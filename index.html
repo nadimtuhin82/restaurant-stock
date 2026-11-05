@@ -51,19 +51,44 @@
   #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #333;
            color: white; padding: 12px 20px; border-radius: 8px; display: none; z-index: 10; max-width: 90%; }
   pre { white-space: pre-wrap; background: white; padding: 12px; border-radius: 8px; border: 1px solid #ddd; }
+  /* Hide manager-only buttons and tabs unless <body> has the "manager" class */
+  body:not(.manager) .manager-only { display: none !important; }
+  dialog { border: none; border-radius: 12px; padding: 20px; width: min(90vw, 380px);
+           box-shadow: 0 4px 20px rgba(0,0,0,.3); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
   code { background: #eee; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
 </style>
 </head>
 <body>
 
-<header><h1>🍽️ Restaurant Stock</h1></header>
+<header class="row">
+  <h1 style="flex:1">🍽️ Restaurant Stock</h1>
+  <button class="btn" id="managerBtn">🔒 Manager</button>
+</header>
 
 <nav>
   <button data-tab="stock" class="active">Stock</button>
   <button data-tab="reorder">Reorder list <span id="reorderCount"></span></button>
-  <button data-tab="add">Add item</button>
-  <button data-tab="settings">Settings</button>
+  <!-- "manager-only" items are hidden until the manager password is entered -->
+  <button data-tab="add" class="manager-only">Add item</button>
+  <button data-tab="settings" class="manager-only">Settings</button>
 </nav>
+
+<!-- Password pop-up. A <dialog> is a built-in browser pop-up window. -->
+<dialog id="pwDialog">
+  <form id="pwForm">
+    <h3 id="pwTitle" style="margin-top:0"></h3>
+    <p id="pwHelp" class="muted"></p>
+    <!-- type="password" shows dots instead of the letters typed -->
+    <input id="pw1" type="password" autocomplete="off" placeholder="Password">
+    <input id="pw2" type="password" autocomplete="off" placeholder="Type it again" style="margin-top:8px">
+    <p id="pwError" style="color:var(--out);min-height:1.2em;margin:8px 0"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="pwCancel">Cancel</button>
+      <button class="btn primary" type="submit">OK</button>
+    </div>
+  </form>
+</dialog>
 
 <main>
   <!-- ===== Tab 1: the staff view – see and update every item ===== -->
@@ -88,9 +113,8 @@
       <input id="fName" required placeholder="e.g. Tomatoes">
 
       <label for="fCategory">Category</label>
-      <select id="fCategory">
-        <option>Food</option><option>Drinks</option><option>Supplies</option>
-      </select>
+      <!-- The options are filled in by the script from the CATEGORIES list -->
+      <select id="fCategory"></select>
 
       <div class="grid2">
         <div>
@@ -129,6 +153,11 @@
     </div>
     <p class="muted">Keep the topic long and hard to guess: anyone who knows it can read the alerts.</p>
 
+    <h2>Manager password</h2>
+    <div class="actions">
+      <button class="btn" id="changePwBtn">🔑 Change manager password</button>
+    </div>
+
     <h2>Backup</h2>
     <p class="muted">The stock list is saved on this tablet only. Download a backup now and then, in case the browser data gets cleared.</p>
     <div class="actions">
@@ -155,9 +184,9 @@ function loadItems() {
   if (saved) return JSON.parse(saved);
   // First time only: a few example items so the page isn't empty
   return [
-    { id: newId(), name: "Tomatoes", category: "Food", unit: "case", count: 3, min: 1, flag: null },
+    { id: newId(), name: "Tomatoes", category: "Walk-in", unit: "case", count: 3, min: 1, flag: null },
     { id: newId(), name: "Cola", category: "Drinks", unit: "case", count: 1, min: 2, flag: null },
-    { id: newId(), name: "Napkins", category: "Supplies", unit: "pack", count: 10, min: 3, flag: null },
+    { id: newId(), name: "Napkins", category: "Front supplies", unit: "pack", count: 10, min: 3, flag: null },
   ];
 }
 
@@ -210,7 +239,18 @@ function escapeHtml(text) {
 // ------------------------------------------------------------------
 // 3. Drawing the screens
 // ------------------------------------------------------------------
-const CATEGORIES = ["Food", "Drinks", "Supplies"];
+// To add, remove or rename a category, change this one list.
+// The Stock tab shows them in this order, and the Add item menu uses it too.
+const CATEGORIES = [
+  "Walk-in", "Freezer", "Sauces", "Seasonings", "Flours",
+  "Boxes", "Drinks", "Cleaning supplies", "Front supplies",
+];
+
+// Items saved under an old category name (e.g. "Food" from an earlier
+// version) aren't in the list above, so they go under "Other" rather
+// than disappearing. Edit them (✏️) to move them to a real category.
+const OTHER = "Other";
+const categoryOf = item => (CATEGORIES.includes(item.category) ? item.category : OTHER);
 
 function render() {
   renderStock();
@@ -222,9 +262,9 @@ function renderStock() {
   const container = document.getElementById("stockList");
   let html = "";
 
-  for (const category of CATEGORIES) {
+  for (const category of [...CATEGORIES, OTHER]) {
     const inCategory = items
-      .filter(i => i.category === category && i.name.toLowerCase().includes(searchText))
+      .filter(i => categoryOf(i) === category && i.name.toLowerCase().includes(searchText))
       .sort((a, b) => a.name.localeCompare(b.name));
     if (inCategory.length === 0) continue;
 
@@ -248,8 +288,8 @@ function renderStock() {
             <button class="btn warn" data-action="low" data-id="${item.id}">Running low</button>
             <button class="btn danger" data-action="out" data-id="${item.id}">Out of stock</button>
             <button class="btn good" data-action="restock" data-id="${item.id}">Restocked</button>
-            <button class="btn" data-action="edit" data-id="${item.id}">✏️</button>
-            <button class="btn" data-action="delete" data-id="${item.id}">🗑️</button>
+            <button class="btn manager-only" data-action="edit" data-id="${item.id}">✏️</button>
+            <button class="btn manager-only" data-action="delete" data-id="${item.id}">🗑️</button>
           </div>
         </div>`;
     }
@@ -351,6 +391,8 @@ document.getElementById("stockList").addEventListener("click", event => {
   if (!button) return;
   const item = items.find(i => i.id === button.dataset.id);
   if (!item) return;
+  // Double-check: edit and delete are for the manager only
+  if (["edit", "delete"].includes(button.dataset.action) && !isManager) return;
   const oldStatus = statusOf(item);
 
   switch (button.dataset.action) {
@@ -399,10 +441,25 @@ function editItem(item) {
   if (unit === null || !unit.trim()) return;
   const min = parseInt(prompt("Warn when it gets down to:", item.min), 10);
   if (isNaN(min) || min < 0) { showToast("Please enter a number"); return; }
+
+  // A pop-up box can't show a drop-down menu, so we list the categories
+  // with numbers and ask for one. Pre-filled with the item's current number.
+  const menu = CATEGORIES.map((c, index) => `${index + 1}. ${c}`).join("\n");
+  const currentNumber = CATEGORIES.indexOf(item.category) + 1 || "";
+  const answer = prompt(`Category – type its number:\n${menu}`, currentNumber);
+  if (answer === null) return;
+  const chosen = CATEGORIES[parseInt(answer, 10) - 1];
+  if (!chosen) { showToast(`Please type a number from 1 to ${CATEGORIES.length}`); return; }
+
   item.name = name.trim();
   item.unit = unit.trim();
   item.min = min;
+  item.category = chosen;
 }
+
+// Fill the Add item category menu from the CATEGORIES list
+document.getElementById("fCategory").innerHTML =
+  CATEGORIES.map(c => `<option>${escapeHtml(c)}</option>`).join("");
 
 // ------------------------------------------------------------------
 // 6. Add-item form, tabs, search, settings
@@ -434,6 +491,8 @@ document.querySelectorAll("nav button").forEach(button => {
 });
 
 function showTab(name) {
+  // Staff can't open the manager-only tabs
+  if (!isManager && (name === "add" || name === "settings")) name = "stock";
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
 }
@@ -500,6 +559,85 @@ function showToast(message) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.style.display = "none"), 3000);
 }
+
+// ------------------------------------------------------------------
+// 7. Manager mode (password lock)
+// Staff can update counts and mark items. Adding, editing, deleting and
+// Settings need the manager password.
+// Honest note: this is a lock to stop staff changing things by mistake,
+// not bank-level security. The password is saved on this tablet only.
+// ------------------------------------------------------------------
+const PASSWORD_KEY = "restaurantStock.managerPassword";
+const AUTO_LOCK_MINUTES = 10;
+let isManager = false;
+let lastTap = Date.now();
+let dialogMode = "unlock";   // "unlock" or "create"
+
+const pwDialog = document.getElementById("pwDialog");
+const pw1 = document.getElementById("pw1");
+const pw2 = document.getElementById("pw2");
+const pwError = document.getElementById("pwError");
+
+function setManager(on) {
+  isManager = on;
+  document.body.classList.toggle("manager", on);
+  document.getElementById("managerBtn").textContent = on ? "🔓 Lock" : "🔒 Manager";
+  if (!on) showTab("stock");   // leave the manager tabs when locking
+}
+
+function openPasswordDialog(mode) {
+  dialogMode = mode;
+  const creating = mode === "create";
+  document.getElementById("pwTitle").textContent = creating ? "Set manager password" : "Manager password";
+  document.getElementById("pwHelp").textContent = creating
+    ? "Pick a password (at least 4 characters). Don't share it with staff."
+    : "Enter the password to add, edit or delete items.";
+  pw2.style.display = creating ? "block" : "none";
+  pw1.value = pw2.value = "";
+  pwError.textContent = "";
+  pwDialog.showModal();
+  pw1.focus();
+}
+
+document.getElementById("managerBtn").addEventListener("click", () => {
+  if (isManager) { setManager(false); showToast("Locked"); return; }
+  // First time ever: no password yet, so ask them to create one
+  openPasswordDialog(localStorage.getItem(PASSWORD_KEY) ? "unlock" : "create");
+});
+
+document.getElementById("changePwBtn").addEventListener("click", () => openPasswordDialog("create"));
+document.getElementById("pwCancel").addEventListener("click", () => pwDialog.close());
+
+document.getElementById("pwForm").addEventListener("submit", event => {
+  event.preventDefault();
+  if (dialogMode === "create") {
+    if (pw1.value.length < 4) { pwError.textContent = "Use at least 4 characters."; return; }
+    if (pw1.value !== pw2.value) { pwError.textContent = "The two passwords don't match."; return; }
+    localStorage.setItem(PASSWORD_KEY, pw1.value);
+    pwDialog.close();
+    setManager(true);
+    showToast("Password saved – manager mode on");
+  } else {
+    if (pw1.value !== localStorage.getItem(PASSWORD_KEY)) {
+      pwError.textContent = "Wrong password.";
+      pw1.value = "";
+      return;
+    }
+    pwDialog.close();
+    setManager(true);
+    showToast("Manager mode on");
+  }
+});
+
+// Auto-lock: if nobody taps the screen for a while, lock manager mode,
+// in case the manager walks away and leaves it unlocked.
+document.addEventListener("pointerdown", () => (lastTap = Date.now()));
+setInterval(() => {
+  if (isManager && Date.now() - lastTap > AUTO_LOCK_MINUTES * 60 * 1000) {
+    setManager(false);
+    showToast("Manager mode locked automatically");
+  }
+}, 30 * 1000);
 
 render();
 </script>
