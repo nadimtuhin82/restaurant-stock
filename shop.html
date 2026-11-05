@@ -112,18 +112,24 @@ function render() {
   const ticked = getTicked().filter(name => names.includes(name));
   setTicked(ticked);
 
-  // Each item is [name, status code, count, unit, category]
-  const row = ([name, code, count, unit, category]) => `
+  // Each item is [name, status code, category]. Alerts from the older
+  // version were [name, code, count, unit, category], so the category is
+  // always the LAST entry – that way both kinds still work.
+  const categoryOf = item => item[item.length - 1];
+  const row = item => {
+    const [name, code] = item;
+    return `
     <label class="item ${code} ${ticked.includes(name) ? "done" : ""}">
       <input type="checkbox" data-name="${escapeHtml(name)}" ${ticked.includes(name) ? "checked" : ""}>
       <span>
         <span class="name">${escapeHtml(name)}</span><br>
-        <span class="details">${LABEL[code]} · ${escapeHtml(count)} ${escapeHtml(unit)} left · ${escapeHtml(category)}</span>
+        <span class="details">${LABEL[code]} · ${escapeHtml(categoryOf(item))}</span>
       </span>
     </label>`;
+  };
 
   // Sort by category so items from the same area are together
-  const byCategory = (a, b) => a[4].localeCompare(b[4]) || a[0].localeCompare(b[0]);
+  const byCategory = (a, b) => categoryOf(a).localeCompare(categoryOf(b)) || a[0].localeCompare(b[0]);
   const needToBuy = saved.items.filter(i => i[1] !== "m").sort(byCategory);
   const moderate = saved.items.filter(i => i[1] === "m").sort(byCategory);
 

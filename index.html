@@ -45,6 +45,8 @@
   button.btn:active { transform: scale(.97); }
   button.big { min-width: 48px; font-size: 1.3rem; font-weight: bold; }
   button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  /* Thick dark outline on the button that matches the item's level now */
+  button.current { outline: 3px solid #222; outline-offset: 2px; }
   button.mod { background: var(--mod); color: #222; border-color: var(--mod); }
   button.warn { background: var(--low); color: white; border-color: var(--low); }
   button.danger { background: var(--out); color: white; border-color: var(--out); }
@@ -122,26 +124,13 @@
       <!-- The options are filled in by the script from the CATEGORIES list -->
       <select id="fCategory"></select>
 
-      <div class="grid2">
-        <div>
-          <label for="fUnit">Counted in</label>
-          <!-- "list" lets people pick a suggestion OR type their own unit -->
-          <input id="fUnit" list="unitOptions" value="unit" required>
-          <datalist id="unitOptions">
-            <option value="unit"><option value="case"><option value="pack"><option value="box">
-            <option value="bottle"><option value="bag"><option value="can">
-          </datalist>
-        </div>
-        <div>
-          <label for="fCount">How many now</label>
-          <input id="fCount" type="number" min="0" step="1" value="0" required>
-        </div>
-      </div>
-
-      <label for="fMin">Warn me when it gets down to</label>
-      <input id="fMin" type="number" min="0" step="1" value="2" required>
-      <p class="muted">Example: if this is 2, the item shows as LOW when there are 2 or fewer left,
-        and MODERATE when there are 4 or fewer (double this number).</p>
+      <label for="fLevel">How much is there right now?</label>
+      <select id="fLevel">
+        <option value="ok">Stocked (OK)</option>
+        <option value="moderate">Moderate</option>
+        <option value="low">Running low</option>
+        <option value="out">Out of stock</option>
+      </select>
 
       <button class="btn primary" type="submit" style="width:100%;margin-top:10px">➕ Add item</button>
     </form>
@@ -185,15 +174,30 @@
 const STORAGE_KEY = "restaurantStock.items";
 const TOPIC_KEY = "restaurantStock.ntfyTopic";
 
+// Each item is just: id, name, category, and level ("ok", "moderate",
+// "low" or "out"). No counting – staff tap the level they see.
 function loadItems() {
   const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) return JSON.parse(saved);
+  if (saved) return upgradeOldItems(JSON.parse(saved));
   // First time only: a few example items so the page isn't empty
   return [
-    { id: newId(), name: "Tomatoes", category: "Walk-in", unit: "case", count: 3, min: 1, flag: null },
-    { id: newId(), name: "Cola", category: "Drinks", unit: "case", count: 1, min: 2, flag: null },
-    { id: newId(), name: "Napkins", category: "Front supplies", unit: "pack", count: 10, min: 3, flag: null },
+    { id: newId(), name: "Tomatoes", category: "Walk-in", level: "ok" },
+    { id: newId(), name: "Cola", category: "Drinks", level: "low" },
+    { id: newId(), name: "Napkins", category: "Front supplies", level: "ok" },
   ];
+}
+
+// Earlier versions stored counts (count, min, flag). Turn those into a level
+// once, using the same rules as before, so nothing already entered is lost.
+function upgradeOldItems(list) {
+  return list.map(item => {
+    if (item.level) return item;
+    let level = "ok";
+    if (item.count <= 0 || item.flag === "out") level = "out";
+    else if (item.flag === "low" || item.count <= item.min) level = "low";
+    else if (item.flag === "moderate" || item.count <= item.min * 2) level = "moderate";
+    return { id: item.id, name: item.name, category: item.category, level };
+  });
 }
 
 function saveItems() {
@@ -218,18 +222,11 @@ let items = loadItems();
 saveItems();
 
 // ------------------------------------------------------------------
-// 2. Working out each item's status
-// An item is OUT if the count is 0 or staff pressed "Out".
-// It's LOW if staff pressed "Low" or the count is at/below the minimum.
-// It's MODERATE (getting down, but still some to go on) if staff pressed
-// "Moderate" or the count is no more than double the minimum.
-// The "flag" lets staff warn ahead of time without counting exactly.
+// 2. Each item's status is simply the level staff last tapped:
+// Restocked = OK, Moderate, Running low, or Out of stock.
 // ------------------------------------------------------------------
 function statusOf(item) {
-  if (item.count <= 0 || item.flag === "out") return "out";
-  if (item.flag === "low" || item.count <= item.min) return "low";
-  if (item.flag === "moderate" || item.count <= item.min * 2) return "moderate";
-  return "ok";
+  return item.level || "ok";
 }
 
 const STATUS_RANK = { ok: 0, moderate: 1, low: 2, out: 3 };
@@ -283,17 +280,12 @@ function renderStock() {
             <span class="name">${escapeHtml(item.name)}</span>
             <span class="badge ${status}">${STATUS_LABEL[status]}</span>
           </div>
-          <div class="row" style="margin-top:8px">
-            <button class="btn big" data-action="minus" data-id="${item.id}">−</button>
-            <span class="count">${item.count}</span>
-            <button class="btn big" data-action="plus" data-id="${item.id}">+</button>
-            <span class="muted">${escapeHtml(item.unit)}(s) · warn at ${item.min}</span>
-          </div>
           <div class="actions">
-            <button class="btn mod" data-action="moderate" data-id="${item.id}">Moderate</button>
-            <button class="btn warn" data-action="low" data-id="${item.id}">Running low</button>
-            <button class="btn danger" data-action="out" data-id="${item.id}">Out of stock</button>
-            <button class="btn good" data-action="restock" data-id="${item.id}">Restocked</button>
+            <!-- "current" outlines the button matching the item's level now -->
+            <button class="btn good ${status === "ok" ? "current" : ""}" data-action="ok" data-id="${item.id}">Restocked</button>
+            <button class="btn mod ${status === "moderate" ? "current" : ""}" data-action="moderate" data-id="${item.id}">Moderate</button>
+            <button class="btn warn ${status === "low" ? "current" : ""}" data-action="low" data-id="${item.id}">Running low</button>
+            <button class="btn danger ${status === "out" ? "current" : ""}" data-action="out" data-id="${item.id}">Out of stock</button>
             <button class="btn manager-only" data-action="edit" data-id="${item.id}">✏️</button>
             <button class="btn manager-only" data-action="delete" data-id="${item.id}">🗑️</button>
           </div>
@@ -318,7 +310,7 @@ const moderateItems = () => itemsWithStatus(["moderate"]);
 
 // Plain-text version of the list – used for the phone alert and the Copy button
 function reorderText() {
-  const line = i => `${STATUS_LABEL[statusOf(i)]}: ${i.name} (${i.count} ${i.unit} left) [${i.category}]`;
+  const line = i => `${STATUS_LABEL[statusOf(i)]}: ${i.name} [${i.category}]`;
   const buy = needToBuy(), moderate = moderateItems();
   if (buy.length === 0 && moderate.length === 0) return "Nothing to reorder – everything is stocked.";
   const parts = [];
@@ -341,7 +333,7 @@ function renderReorder() {
     return `<div class="card ${status}"><div class="row">
       <span class="name">${escapeHtml(i.name)}</span>
       <span class="badge ${status}">${STATUS_LABEL[status]}</span></div>
-      <div class="muted">${i.count} ${escapeHtml(i.unit)}(s) left · ${i.category}</div></div>`;
+      <div class="muted">${escapeHtml(i.category)}</div></div>`;
   };
   let html = "";
   if (buy.length) html += "<h2>Need to buy</h2>" + buy.map(card).join("");
@@ -361,8 +353,9 @@ function renderReorder() {
 function shoppingLink() {
   // Short codes keep the address small: o = out, l = low, m = moderate
   const code = { out: "o", low: "l", moderate: "m" };
+  // Each item becomes [name, status code, category]
   const list = [...needToBuy(), ...moderateItems()].map(i =>
-    [i.name, code[statusOf(i)], i.count, i.unit, i.category]);
+    [i.name, code[statusOf(i)], i.category]);
   const packed = encodeURIComponent(JSON.stringify({ t: Date.now(), items: list }));
   return new URL("shop.html", location.href).href + "#" + packed;
 }
@@ -398,7 +391,7 @@ async function sendToPhone(title, message, priority = 3) {
 }
 
 // Alert the owner only when an item gets WORSE (ok→moderate→low→out),
-// so pressing + and − doesn't spam the phone.
+// so tapping Restocked (or the same button twice) doesn't spam the phone.
 // MODERATE alerts arrive quietly (priority 2: no sound), because there's
 // still stock to go on. LOW and OUT alerts make a normal sound.
 function alertIfWorse(item, oldStatus) {
@@ -427,31 +420,14 @@ document.getElementById("stockList").addEventListener("click", event => {
   const oldStatus = statusOf(item);
 
   switch (button.dataset.action) {
-    case "plus":
-      item.count += 1;
-      break;
-    case "minus":
-      item.count = Math.max(0, item.count - 1);
-      break;
+    // The four level buttons: one tap sets the level, no questions asked
+    case "ok":
     case "moderate":
-      item.flag = "moderate";
-      break;
     case "low":
-      item.flag = "low";
-      break;
     case "out":
-      item.flag = "out";
-      item.count = 0;
+      item.level = button.dataset.action;
+      if (item.level === "ok") showToast(`${item.name} marked as stocked`);
       break;
-    case "restock": {
-      const answer = prompt(`How many ${item.unit}(s) of ${item.name} do you have now?`, item.count);
-      if (answer === null) return;          // they pressed Cancel
-      const newCount = parseInt(answer, 10);
-      if (isNaN(newCount) || newCount < 0) { showToast("Please enter a number"); return; }
-      item.count = newCount;
-      item.flag = null;                     // clear the "low"/"out" warning
-      break;
-    }
     case "edit":
       editItem(item);
       break;
@@ -468,10 +444,6 @@ document.getElementById("stockList").addEventListener("click", event => {
 function editItem(item) {
   const name = prompt("Item name:", item.name);
   if (name === null || !name.trim()) return;
-  const unit = prompt("Counted in (unit, case, pack…):", item.unit);
-  if (unit === null || !unit.trim()) return;
-  const min = parseInt(prompt("Warn when it gets down to:", item.min), 10);
-  if (isNaN(min) || min < 0) { showToast("Please enter a number"); return; }
 
   // A pop-up box can't show a drop-down menu, so we list the categories
   // with numbers and ask for one. Pre-filled with the item's current number.
@@ -483,8 +455,6 @@ function editItem(item) {
   if (!chosen) { showToast(`Please type a number from 1 to ${CATEGORIES.length}`); return; }
 
   item.name = name.trim();
-  item.unit = unit.trim();
-  item.min = min;
   item.category = chosen;
 }
 
@@ -506,10 +476,7 @@ document.getElementById("addForm").addEventListener("submit", event => {
     id: newId(),
     name,
     category: document.getElementById("fCategory").value,
-    unit: document.getElementById("fUnit").value.trim() || "unit",
-    count: parseInt(document.getElementById("fCount").value, 10) || 0,
-    min: parseInt(document.getElementById("fMin").value, 10) || 0,
-    flag: null,
+    level: document.getElementById("fLevel").value,
   });
   saveItems();
   render();
@@ -572,7 +539,7 @@ document.getElementById("importFile").addEventListener("change", async event => 
     const data = JSON.parse(await file.text());
     if (!Array.isArray(data)) throw new Error("not a list");
     if (!confirm(`Replace the current list with ${data.length} items from the backup?`)) return;
-    items = data;
+    items = upgradeOldItems(data);   // older backups still have counts
     saveItems();
     render();
     showToast("Backup restored");
