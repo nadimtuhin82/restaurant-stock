@@ -373,15 +373,19 @@ async function sendToPhone(title, message, priority = 3) {
     // We send everything as one JSON package (a standard text format for data)
     // to ntfy's main address. "click" is the page that opens when the
     // notification is tapped: the shopping list.
+    const link = shoppingLink();
     const response = await fetch("https://ntfy.sh/", {
       method: "POST",
       body: JSON.stringify({
         topic: getTopic(),
         title,
-        message: message + "\n\nTap to open the shopping list.",
+        message: message + "\n\nTap \"Open shopping list\" to tick items off.",
         priority,
         tags: ["shopping_cart"],
-        click: shoppingLink(),
+        click: link,
+        // "actions" adds a button to the notification and to the message
+        // inside the ntfy app. "view" means the button opens a web page.
+        actions: [{ action: "view", label: "🛒 Open shopping list", url: link }],
       }),
     });
     if (!response.ok) throw new Error("ntfy answered " + response.status);
