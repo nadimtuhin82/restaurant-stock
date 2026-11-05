@@ -352,11 +352,12 @@ function renderReorder() {
 // copy of the stock data.
 //
 // ntfy's free plan refuses alerts bigger than 4,096 bytes, so the list is
-// packed tightly. Example: "v2*lx8k2a*Walk-in!Sauces*o0Chicken~l1Ketchup*0"
-//   v2        = format version (so shop.html knows how to read it)
+// packed tightly. Example: "v3*lx8k2a*Walk-in!Sauces*o0swk3f1'Chicken~l1swk2z0'Ketchup*0*topic"
+//   v3        = format version (so shop.html knows how to read it)
 //   lx8k2a    = time the list was made
 //   Walk-in!… = the categories used, each written once, split by "!"
-//   o0Chicken = status (o/l/m) + category number + item name, split by "~"
+//   o0swk3f1'Chicken = status (o/l/m) + category number + when the level
+//               last changed + ' + item name. Items are split by "~"
 //   0         = how many items didn't fit (shown as a note on the phone)
 //   topic     = the ntfy topic, so the phone page can fetch new lists itself
 function shoppingLink(buyList, moderateList, leftOut = 0) {
@@ -364,9 +365,11 @@ function shoppingLink(buyList, moderateList, leftOut = 0) {
   const code = { out: "o", low: "l", moderate: "m" };
   const all = [...buyList, ...moderateList];
   const categories = [...new Set(all.map(i => i.category))];
+  // "changed" in seconds, written in base 36 (digits + letters) to keep it short
+  const stamp = i => Math.floor((i.changed || 0) / 1000).toString(36);
   const packedItems = all.map(i =>
-    code[statusOf(i)] + categories.indexOf(i.category).toString(36) + clean(i.name));
-  const text = ["v2", Date.now().toString(36), categories.map(clean).join("!"),
+    code[statusOf(i)] + categories.indexOf(i.category).toString(36) + stamp(i) + "'" + clean(i.name));
+  const text = ["v3", Date.now().toString(36), categories.map(clean).join("!"),
                 packedItems.join("~"), leftOut, clean(getTopic())].join("*");
   return new URL("shop.html", location.href).href + "#" + encodeURIComponent(text);
 }
@@ -471,6 +474,9 @@ document.getElementById("stockList").addEventListener("click", event => {
     case "moderate":
     case "low":
     case "out":
+      // Remember WHEN the level changed. The phone uses this so a tick from
+      // an earlier shopping trip doesn't hide an item that ran out again.
+      if (item.level !== button.dataset.action) item.changed = Date.now();
       item.level = button.dataset.action;
       if (item.level === "ok") showToast(`${item.name} marked as stocked`);
       break;
@@ -523,6 +529,7 @@ document.getElementById("addForm").addEventListener("submit", event => {
     name,
     category: document.getElementById("fCategory").value,
     level: document.getElementById("fLevel").value,
+    changed: Date.now(),
   });
   saveItems();
   render();

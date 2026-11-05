@@ -58,26 +58,47 @@
 // The list is saved on this phone, so it's still here without internet.
 // ------------------------------------------------------------------
 const LIST_KEY = "shoppingList.latest";
-const TICKS_KEY = "shoppingList.ticked";   // names of items already bought
+// Ticked items, saved as "stamp:name". The stamp is when the item's level
+// last changed on the tablet, so if an item gets restocked and later runs
+// out again, it has a new stamp and the old tick no longer applies.
+// (A new key name, so stale ticks from the older version are dropped.)
+const TICKS_KEY = "shoppingList.ticks2";
 const TOPIC_KEY = "shoppingList.topic";    // learned from the first alert you tap
 
 const LABEL = { o: "OUT", l: "LOW", m: "MODERATE" };
 
 // Turns the packed text from the address back into a list.
-// Every item becomes [name, status code, category].
+// Every item becomes [name, status code, stamp, category].
 function unpackList(text) {
-  if (text.startsWith("v2*")) {
+  if (text.startsWith("v3*") || text.startsWith("v2*")) {
     // Packed format – see shoppingLink() in index.html for how it's built
+    const isV3 = text.startsWith("v3*");
     const [, time, categoryText, itemText, leftOut, topic] = text.split("*");
     const categories = categoryText ? categoryText.split("!") : [];
     const items = (itemText ? itemText.split("~") : [])
       .filter(part => part.length > 2)
-      .map(part => [part.slice(2), part[0], categories[parseInt(part[1], 36)] || "Other"]);
+      .map(part => {
+        const code = part[0];
+        const category = categories[parseInt(part[1], 36)] || "Other";
+        let rest = part.slice(2), stamp = "";
+        if (isV3) {
+          // v3 items: stamp + ' + name (the FIRST ' is the divider,
+          // so names like "Lay's" still work)
+          const divider = rest.indexOf("'");
+          stamp = rest.slice(0, divider);
+          rest = rest.slice(divider + 1);
+        }
+        return [rest, code, stamp, category];
+      });
     return { t: parseInt(time, 36), items, leftOut: parseInt(leftOut || "0", 10), topic };
   }
-  // Older alerts sent the list as JSON
-  return JSON.parse(text);
+  // Oldest alerts sent the list as JSON: keep name, code and category
+  const old = JSON.parse(text);
+  old.items = old.items.map(i => [i[0], i[1], "", i[i.length - 1]]);
+  return old;
 }
+
+const tickKey = item => item[2] + ":" + item[0];   // stamp:name
 
 function readListFromAddress() {
   if (location.hash.length < 2) return;
@@ -132,20 +153,19 @@ function render() {
     "List from " + new Date(when).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) +
     " · " + connectionStatus;
 
-  // Keep only ticks for items that are still on the list
-  const names = saved.items.map(item => item[0]);
-  const ticked = getTicked().filter(name => names.includes(name));
+  // Keep only ticks that match an item on this list (same name AND stamp)
+  const keys = saved.items.map(tickKey);
+  const ticked = getTicked().filter(key => keys.includes(key));
   setTicked(ticked);
 
-  // Each item is [name, status code, category]. Alerts from the older
-  // version were [name, code, count, unit, category], so the category is
-  // always the LAST entry – that way both kinds still work.
+  // Each item is [name, status code, stamp, category]
   const categoryOf = item => item[item.length - 1];
   const row = item => {
     const [name, code] = item;
+    const isTicked = ticked.includes(tickKey(item));
     return `
-    <label class="item ${code} ${ticked.includes(name) ? "done" : ""}">
-      <input type="checkbox" data-name="${escapeHtml(name)}" ${ticked.includes(name) ? "checked" : ""}>
+    <label class="item ${code} ${isTicked ? "done" : ""}">
+      <input type="checkbox" data-key="${escapeHtml(tickKey(item))}" ${isTicked ? "checked" : ""}>
       <span>
         <span class="name">${escapeHtml(name)}</span><br>
         <span class="details">${LABEL[code]} · ${escapeHtml(categoryOf(item))}</span>
@@ -172,10 +192,10 @@ function render() {
 
 // Tapping a tick box saves it straight away, so closing the page is safe
 document.getElementById("list").addEventListener("change", event => {
-  const name = event.target.dataset.name;
-  if (!name) return;
-  const ticked = getTicked().filter(n => n !== name);
-  if (event.target.checked) ticked.push(name);
+  const key = event.target.dataset.key;
+  if (!key) return;
+  const ticked = getTicked().filter(k => k !== key);
+  if (event.target.checked) ticked.push(key);
   setTicked(ticked);
   render();
 });
